@@ -14,6 +14,7 @@ using glm::vec3;
 using glm::vec4;
 
 class VulkanQuadRenderer : public RendererBase {
+public:
     VulkanQuadRenderer(VulkanRenderDevice& vkDev, const std::vector<std::string>& textureFiles);
     virtual ~VulkanQuadRenderer();
 

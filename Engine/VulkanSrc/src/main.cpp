@@ -1,7 +1,7 @@
 #include "shared/vkFramework/VulkanApp.h"
 #include "shared/vkRenderers/VulkanClear.h"
 #include "shared/vkRenderers/VulkanFinish.h"
-#include "shared/vkRenderers/VulkanMultiMeshRenderer.h"
+#include "shared/vkRenderers/VulkanQuadRenderer.h"
 
 const uint32_t kScreenWidth = 1280;
 const uint32_t kScreenHeight = 720;
@@ -11,19 +11,42 @@ GLFWwindow* window;
 VulkanInstance vk;
 VulkanRenderDevice vkDev;
 
-std::unique_ptr<MultiMeshRenderer> multiRenderer;
+std::unique_ptr<VulkanQuadRenderer> quadRenderer;
 std::unique_ptr<VulkanClear> clear;
 std::unique_ptr<VulkanFinish> finish;
 
-struct MouseState {
-    glm::vec2 pos = glm::vec2(0.f);
-    bool pressedLeft = false;
-}mouseState;
+const double kAnimationFPS = 60.0;
+const uint32_t kNumFlipbookFrames = 100;
 
-CameraPositioner_FirstPerson positioner_firstPerson(glm::vec3(0.0f, -5.0f, 15.0f), vec3(0.0f, 0.0f, -1.0f), vec3(0.0f, 1.0f, 0.0f));
-Camera camera = Camera(positioner_firstPerson);
+struct AnimationState {
+    vec2 position = vec2(0);
+    double startTime = 0;
+    uint32_t textureIndex = 0;
+    uint32_t flipbookOffset = 0;
+};
 
-void initVulkan() {
+std::vector<AnimationState> animations;
+
+void UpdateAnimations() {
+    for(size_t i = 0; i < animations.size();) {
+        animations[i].textureIndex = animations[i].flipbookOffset + (uint32_t)(kAnimationFPS * ((glfwGetTime() - animations[i].startTime)));
+        if(animations[i].textureIndex - animations[i].flipbookOffset > kNumFlipbookFrames)
+            animations.erase(animations.begin() - 1);
+        else
+            i++;
+    }
+}
+
+void FillQuadBuffer(VulkanRenderDevice& vkDev, VulkanQuadRenderer& quadRenderer, size_t currentImage) {
+    const float aspect = (float)vkDev.framebufferWidth / (float)vkDev.framebufferHeight;
+    const float quadSize = 0.5f;
+
+    quadRenderer.Clear();
+    quadRenderer.Quad(-quadSize, -quadSize * aspect, quadSize, quadSize * aspect);
+    quadRenderer.UpdateBuffer(vkDev, currentImage);
+}
+
+bool initVulkan() {
     CreateInstance(&vk.instance);
 
     if (!SetupDebugCallbacks(vk.instance, &vk.messenger, &vk.reportCallback))
@@ -52,26 +75,26 @@ void initVulkan() {
     if(!InitVulkanRenderDevice2(vk, vkDev, kScreenWidth, kScreenHeight, IsDeviceSuitable, deviceFeatures2))
         exit(EXIT_FAILURE);
 
-    const int kNumFilpbookFrames = 100;
-
     std::vector<std::string> textureFiles;
     for(uint32_t j = 0; j < 3; j++) {
-        for(uint32_t i = 0; i != kNumFilpbookFrames; i++) {
+        for(uint32_t i = 0; i != kNumFlipbookFrames; i++) {
             char fname[1024];
-            snprintf(fname, sizeof(fname), "../../../data/anim/explosion/explosion%02u-frame%03u.tga", j, j+1);
+            snprintf(fname, sizeof(fname), "../../../data/anim/explosion/explosion%02u-frame%03u.tga", j, i + 1);
             textureFiles.emplace_back(fname);
         }
     }
 
-    clear = std::make_unique<VulkanClear>(vkDev, VulkanImage());
-    finish = std::make_unique<VulkanFinish>(vkDev, VulkanImage());
+    quadRenderer = std::make_unique<VulkanQuadRenderer>(vkDev, textureFiles);
 
-    multiRenderer = std::make_unique<MultiMeshRenderer>(
-            vkDev,
-            "../../../data/meshes/test.meshes",
-            "../../../data/meshes/test.meshes.drawdata",
-            "",
-            "../../../data/shaders/Vk01.vert","../../../data/shaders/Vk01.frag");
+    for(size_t i = 0; i < vkDev.swapchainImages.size(); i++) {
+        FillQuadBuffer(vkDev, *quadRenderer, i);
+    }
+
+    VulkanImage nullTexture = { .image = VK_NULL_HANDLE, .imageView = VK_NULL_HANDLE };
+    clear = std::make_unique<VulkanClear>(vkDev, nullTexture);
+    finish = std::make_unique<VulkanFinish>(vkDev, nullTexture);
+
+    return VK_SUCCESS;
 }
 
 void terminateVulkan()
@@ -79,31 +102,26 @@ void terminateVulkan()
     finish = nullptr;
     clear = nullptr;
 
-    multiRenderer = nullptr;
+    quadRenderer = nullptr;
 
     DestroyVulkanRenderDevice(vkDev);
     DestroyVulkanInstance(vk);
 }
 
-void update3D(uint32_t imageIndex)
-{
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
-    const float ratio = width / (float)height;
-
-    const mat4 m1 = glm::rotate(mat4(1.f), glm::pi<float>(), vec3(1, 0, 0));
-    const mat4 p = glm::perspective(45.0f, ratio, 0.1f, 1000.0f);
-
-    const mat4 view = camera.GetViewMatrix();
-    const mat4 mtx = p * view * m1;
-
-    multiRenderer->UpdateUniformBuffer(vkDev, imageIndex, mtx);
-}
+float mouseX = 0;
+float mouseY = 0;
 
 void composeFrame(VkCommandBuffer commandBuffer, uint32_t imageIndex)
 {
+    UpdateAnimations();
+
     clear->FillCommandBuffer(commandBuffer, imageIndex);
-    multiRenderer->FillCommandBuffer(commandBuffer, imageIndex);
+
+    for(auto & animation : animations) {
+        quadRenderer->PushConstants(commandBuffer, animation.textureIndex, animation.position);
+        quadRenderer->FillCommandBuffer(commandBuffer, imageIndex);
+    }
+
     finish->FillCommandBuffer(commandBuffer, imageIndex);
 }
 
@@ -111,44 +129,43 @@ int main() {
 
     window = initVulkanApp(kScreenWidth, kScreenHeight);
 
-    glfwSetKeyCallback(
-            window,
-            [](GLFWwindow* window, int key, int scancode, int action, int mods)
-            {
-                const bool pressed = action != GLFW_RELEASE;
-                if (key == GLFW_KEY_ESCAPE && pressed)
-                    glfwSetWindowShouldClose(window, GLFW_TRUE);
-                if (key == GLFW_KEY_W)
-                    positioner_firstPerson.mMovement.mForward = pressed;
-                if (key == GLFW_KEY_S)
-                    positioner_firstPerson.mMovement.mBackward = pressed;
-                if (key == GLFW_KEY_A)
-                    positioner_firstPerson.mMovement.mLeft = pressed;
-                if (key == GLFW_KEY_D)
-                    positioner_firstPerson.mMovement.mRight = pressed;
-                if (key == GLFW_KEY_Q)
-                    positioner_firstPerson.mMovement.mUp = pressed;
-                if (key == GLFW_KEY_E)
-                    positioner_firstPerson.mMovement.mDown = pressed;
-                if (key == GLFW_KEY_SPACE)
-                    positioner_firstPerson.SetUpVector(vec3(0.0f, 1.0f, 0.0f));
-            }
-    );
+    glfwSetCursorPosCallback(window,
+                             [](GLFWwindow* window, double xpos, double ypos) {
+        mouseX = (float)xpos;
+        mouseY = (float)ypos;
+    });
+
+    glfwSetMouseButtonCallback(window,
+                               [](GLFWwindow* window, int button, int action, int mods) {
+       if(button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+           const float mx = (mouseX / (float)vkDev.framebufferWidth ) * 2.0f - 1.0f;
+           const float my = (mouseY / (float)vkDev.framebufferHeight) * 2.0f - 1.0f;
+
+           animations.push_back(
+                   AnimationState {
+                       .position = vec2(mx, my),
+                       .startTime = glfwGetTime(),
+                       .textureIndex = 0,
+                       .flipbookOffset = kNumFlipbookFrames * (uint32_t)(rand() % 3)
+                   });
+       }
+    });
+
+    glfwSetKeyCallback(window,
+                       [](GLFWwindow* window, int key, int scancode, int action, int mods) {
+        if(key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
+    });
 
     initVulkan();
 
-    double timeStamp = glfwGetTime();
-    float deltaSeconds = 0.0f;
+    printf("Texture loaded. Click to make an explosion\n");
+
 
     while (!glfwWindowShouldClose(window))
     {
-        positioner_firstPerson.Update(deltaSeconds, mouseState.pos, mouseState.pressedLeft);
 
-        const double newTimeStamp = glfwGetTime();
-        deltaSeconds = static_cast<float>(newTimeStamp - timeStamp);
-        timeStamp = newTimeStamp;
-
-        drawFrame(vkDev, &update3D, &composeFrame);
+        drawFrame(vkDev, [](uint32_t){}, composeFrame);
 
         glfwPollEvents();
     }

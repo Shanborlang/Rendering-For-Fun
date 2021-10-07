@@ -1345,6 +1345,52 @@ bool InitVulkanRenderDevice(VulkanInstance &vk, VulkanRenderDevice &vkDev, uint3
     return true;
 }
 
+bool InitVulkanRenderDevice2(VulkanInstance& vk, VulkanRenderDevice& vkDev, uint32_t width, uint32_t height, std::function<bool(VkPhysicalDevice)> selector, VkPhysicalDeviceFeatures2 deviceFeatures2) {
+    vkDev.framebufferWidth = width;
+    vkDev.framebufferHeight = height;
+
+    VK_CHECK(FindSuitablePhysicalDevice(vk.instance, selector, &vkDev.physicalDevice));
+    vkDev.graphicsFamily = FindQueueFamilies(vkDev.physicalDevice, VK_QUEUE_GRAPHICS_BIT);
+    VK_CHECK(CreateDevice2(vkDev.physicalDevice, deviceFeatures2, vkDev.graphicsFamily, &vkDev.device));
+
+    vkGetDeviceQueue(vkDev.device, vkDev.graphicsFamily, 0, &vkDev.graphicsQueue);
+    if (vkDev.graphicsQueue == nullptr)
+        exit(EXIT_FAILURE);
+
+    VkBool32 presentSupported = 0;
+    vkGetPhysicalDeviceSurfaceSupportKHR(vkDev.physicalDevice, vkDev.graphicsFamily, vk.surface, &presentSupported);
+    if (!presentSupported)
+        exit(EXIT_FAILURE);
+
+    VK_CHECK(CreateSwapchain(vkDev.device, vkDev.physicalDevice, vk.surface, vkDev.graphicsFamily, width, height, &vkDev.swapchain));
+    const size_t imageCount = CreateSwapchainImages(vkDev.device, vkDev.swapchain, vkDev.swapchainImages, vkDev.swapchainImageViews);
+    vkDev.commandBuffers.resize(imageCount);
+
+    VK_CHECK(CreateSemaphore(vkDev.device, &vkDev.semaphore));
+    VK_CHECK(CreateSemaphore(vkDev.device, &vkDev.renderSemaphore));
+
+    const VkCommandPoolCreateInfo cpi =
+            {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .flags = 0,
+                    .queueFamilyIndex = vkDev.graphicsFamily
+            };
+
+    VK_CHECK(vkCreateCommandPool(vkDev.device, &cpi, nullptr, &vkDev.commandPool));
+
+    const VkCommandBufferAllocateInfo ai =
+            {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                    .pNext = nullptr,
+                    .commandPool = vkDev.commandPool,
+                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                    .commandBufferCount = static_cast<uint32_t>(vkDev.swapchainImages.size()),
+            };
+
+    VK_CHECK(vkAllocateCommandBuffers(vkDev.device, &ai, &vkDev.commandBuffers[0]));
+    return true;
+}
+
 void CopyBufferToImage(VulkanRenderDevice &vkDev, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height,
                        uint32_t layerCount) {
     auto commandBuffer = BeginSingleTimeCommands(vkDev);
@@ -1811,6 +1857,35 @@ bool CreatePipelineLayout(VkDevice device, VkDescriptorSetLayout dsLayout, VkPip
             .pSetLayouts = &dsLayout,
             .pushConstantRangeCount = 0,
             .pPushConstantRanges = nullptr,
+    };
+
+    return (vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, pipelineLayout) == VK_SUCCESS);
+}
+
+bool CreatePipelineLayoutWithConstants(VkDevice device, VkDescriptorSetLayout dsLayout, VkPipelineLayout* pipelineLayout, uint32_t vtxConstSize, uint32_t fragConstSize) {
+    const VkPushConstantRange ranges[] = {
+            {
+                VK_SHADER_STAGE_VERTEX_BIT, // stageFlags
+                0,                          // offset
+                vtxConstSize                // size
+            },
+            {
+                VK_SHADER_STAGE_FRAGMENT_BIT, // stateFlags
+                vtxConstSize,                  // offset
+                fragConstSize                   // size
+            }
+    };
+
+    uint32_t constSize = (vtxConstSize > 0) + (fragConstSize > 0);
+
+    const VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .setLayoutCount = 1,
+            .pSetLayouts = &dsLayout,
+            .pushConstantRangeCount = constSize,
+            .pPushConstantRanges = (constSize == 0) ? nullptr : (vtxConstSize > 0 ? ranges : &ranges[1])
     };
 
     return (vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, nullptr, pipelineLayout) == VK_SUCCESS);
