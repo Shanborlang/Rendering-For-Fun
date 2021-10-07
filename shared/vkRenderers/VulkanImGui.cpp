@@ -9,9 +9,10 @@
 constexpr uint32_t ImGuiVtxBufferSize = 512 * 1024 * sizeof(ImDrawVert);
 constexpr uint32_t ImGuiIdxBufferSize = 512 * 1024 * sizeof(uint32_t);
 
-void AddImGuiItem(uint32_t width, uint32_t height, VkCommandBuffer commandBuffer, const ImDrawCmd* pcmd, ImVec2 clipOff, ImVec2 clipScale, int idxOffset, int vtxOffset,
-                  const std::vector<VulkanTexture>& textures, VkPipelineLayout pipelineLayout) {
-    if(pcmd->UserCallback)
+void AddImGuiItem(uint32_t width, uint32_t height, VkCommandBuffer commandBuffer, const ImDrawCmd *pcmd, ImVec2 clipOff,
+                  ImVec2 clipScale, int idxOffset, int vtxOffset,
+                  const std::vector<VulkanTexture> &textures, VkPipelineLayout pipelineLayout) {
+    if (pcmd->UserCallback)
         return;
 
     // Project scissor/clipping rectangles into framebuffer space
@@ -21,22 +22,22 @@ void AddImGuiItem(uint32_t width, uint32_t height, VkCommandBuffer commandBuffer
     clipRect.z = (pcmd->ClipRect.z - clipOff.x) * clipScale.x;
     clipRect.w = (pcmd->ClipRect.w - clipOff.y) * clipScale.y;
 
-    if (clipRect.x < width && clipRect.y < height && clipRect.z >= 0.0f && clipRect.w >= 0.0f)
-    {
+    if (clipRect.x < width && clipRect.y < height && clipRect.z >= 0.0f && clipRect.w >= 0.0f) {
         if (clipRect.x < 0.0f) clipRect.x = 0.0f;
         if (clipRect.y < 0.0f) clipRect.y = 0.0f;
         // Apply scissor/clipping rectangle
         const VkRect2D scissor = {
-                .offset = { .x = (int32_t)(clipRect.x), .y = (int32_t)(clipRect.y) },
-                .extent = { .width = (uint32_t)(clipRect.z - clipRect.x), .height = (uint32_t)(clipRect.w - clipRect.y) }
+                .offset = {.x = (int32_t) (clipRect.x), .y = (int32_t) (clipRect.y)},
+                .extent = {.width = (uint32_t) (clipRect.z - clipRect.x), .height = (uint32_t) (clipRect.w -
+                                                                                                clipRect.y)}
         };
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-        // this is added in the Chapter 6: Using descriptor indexing in Vulkan to render an ImGui UI
-        if (textures.size() > 0)
-        {
-            uint32_t texture = (uint32_t)(intptr_t)pcmd->TextureId;
-            vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), (const void*)&texture);
+        // Using descriptor indexing in Vulkan to render an ImGui UI
+        if (!textures.empty()) {
+            auto texture = (uint32_t) (intptr_t) pcmd->TextureId;
+            vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t),
+                               (const void *) &texture);
         }
 
         vkCmdDraw(commandBuffer,
@@ -47,7 +48,8 @@ void AddImGuiItem(uint32_t width, uint32_t height, VkCommandBuffer commandBuffer
     }
 }
 
-bool CreateFontTexture(ImGuiIO& io, const char* fontFile, VulkanRenderDevice& vkDev, VkImage& textureImage, VkDeviceMemory& textureImageMemory) {
+bool CreateFontTexture(ImGuiIO &io, const char *fontFile, VulkanRenderDevice &vkDev, VkImage &textureImage,
+                       VkDeviceMemory &textureImageMemory) {
     // Build texture atlas
     ImFontConfig cfg = ImFontConfig();
     cfg.FontDataOwnedByAtlas = false;
@@ -56,19 +58,20 @@ bool CreateFontTexture(ImGuiIO& io, const char* fontFile, VulkanRenderDevice& vk
     cfg.PixelSnapH = true;
     cfg.OversampleH = 4;
     cfg.OversampleV = 4;
-    ImFont* Font = io.Fonts->AddFontFromFileTTF(fontFile, cfg.SizePixels, &cfg);
+    ImFont *Font = io.Fonts->AddFontFromFileTTF(fontFile, cfg.SizePixels, &cfg);
 
-    unsigned  char* pixels = nullptr;
+    unsigned char *pixels = nullptr;
     int texWidth = 1, texHeight = 1;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &texWidth, &texHeight);
 
-    if(!pixels || !CreateTextureImageFromData(vkDev, textureImage, textureImageMemory, pixels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM)) {
+    if (!pixels || !CreateTextureImageFromData(vkDev, textureImage, textureImageMemory, pixels, texWidth, texHeight,
+                                               VK_FORMAT_R8G8B8A8_UNORM)) {
         std::fprintf(stderr, "Failed to load textures\n");
         fflush(stdout);
         return false;
     }
 
-    io.Fonts->TexID = (ImTextureID)0;
+    io.Fonts->TexID = (ImTextureID) 0;
     io.FontDefault = Font;
     io.DisplayFramebufferScale = ImVec2(1, 1);
 
@@ -76,9 +79,9 @@ bool CreateFontTexture(ImGuiIO& io, const char* fontFile, VulkanRenderDevice& vk
 }
 
 ImGuiRenderer::ImGuiRenderer(VulkanRenderDevice &vkDev)
-: RendererBase(vkDev, VulkanImage()){
+        : RendererBase(vkDev, VulkanImage()) {
     // Resource loading
-    ImGuiIO& io = ImGui::GetIO();
+    ImGuiIO &io = ImGui::GetIO();
     CreateFontTexture(io, "../../../data/fonts/OpenSans-Light.ttf", vkDev, mFont.image, mFont.imageMemory);
 
     CreateImageView(vkDev.device, mFont.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &mFont.imageView);
@@ -92,11 +95,11 @@ ImGuiRenderer::ImGuiRenderer(VulkanRenderDevice &vkDev)
 
     mBufferSize = ImGuiVtxBufferSize + ImGuiIdxBufferSize;
 
-    for(size_t i = 0; i < imgCount; i++) {
-        if(!CreateBuffer(vkDev.device, vkDev.physicalDevice, mBufferSize,
-                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         mStorageBuffer[i], mStorageBufferMemory[i])) {
+    for (size_t i = 0; i < imgCount; i++) {
+        if (!CreateBuffer(vkDev.device, vkDev.physicalDevice, mBufferSize,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          mStorageBuffer[i], mStorageBufferMemory[i])) {
             std::fprintf(stderr, "ImGuiRenderer: CreateBuffer() failed\n");
             exit(EXIT_FAILURE);
         }
@@ -110,18 +113,18 @@ ImGuiRenderer::ImGuiRenderer(VulkanRenderDevice &vkDev)
         !CreateDescriptorSet(vkDev) ||
         !CreatePipelineLayout(vkDev.device, mDescriptorSetLayout, &mPipelineLayout) ||
         !CreateGraphicsPipeline(vkDev, mRenderPass, mPipelineLayout,
-                                { "../../../data/shaders/imgui.vert", "../../../data/shaders/imgui.frag" }, &mGraphicsPipeline, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-                                true, true, true))
-    {
+                                {"../../../data/shaders/imgui.vert", "../../../data/shaders/imgui.frag"},
+                                &mGraphicsPipeline, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                true, true, true)) {
         std::fprintf(stderr, "ImGuiRenderer: pipeline creation failed\n");
         exit(EXIT_FAILURE);
     }
 }
 
 ImGuiRenderer::ImGuiRenderer(VulkanRenderDevice &vkDev, const std::vector<VulkanTexture> &textures)
-: RendererBase(vkDev, VulkanImage()), mExtTextures(textures){
+        : RendererBase(vkDev, VulkanImage()), mExtTextures(textures) {
     // Resource loading
-    ImGuiIO& io = ImGui::GetIO();
+    ImGuiIO &io = ImGui::GetIO();
     CreateFontTexture(io, "../../../data/fonts/OpenSans-Light.ttf", vkDev, mFont.image, mFont.imageMemory);
 
     CreateImageView(vkDev.device, mFont.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, &mFont.imageView);
@@ -135,11 +138,11 @@ ImGuiRenderer::ImGuiRenderer(VulkanRenderDevice &vkDev, const std::vector<Vulkan
 
     mBufferSize = ImGuiVtxBufferSize + ImGuiIdxBufferSize;
 
-    for(size_t i = 0; i < imgCount; i++) {
-        if(!CreateBuffer(vkDev.device, vkDev.physicalDevice, mBufferSize,
-                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         mStorageBuffer[i], mStorageBufferMemory[i])) {
+    for (size_t i = 0; i < imgCount; i++) {
+        if (!CreateBuffer(vkDev.device, vkDev.physicalDevice, mBufferSize,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          mStorageBuffer[i], mStorageBufferMemory[i])) {
             std::fprintf(stderr, "ImGuiRenderer: CreateBuffer() failed\n");
             exit(EXIT_FAILURE);
         }
@@ -150,19 +153,25 @@ ImGuiRenderer::ImGuiRenderer(VulkanRenderDevice &vkDev, const std::vector<Vulkan
         !CreateColorAndDepthFramebuffers(vkDev, mRenderPass, VK_NULL_HANDLE, mSwapchainFramebuffers) ||
         !CreateUniformBuffers(vkDev, sizeof(glm::mat4)) ||
         !CreateDescriptorPool(vkDev, 1, 2, 1 + static_cast<uint32_t>(textures.size()), &mDescriptorPool) ||
-        !CreateDescriptorSet(vkDev) ||
-        !CreatePipelineLayout(vkDev.device, mDescriptorSetLayout, &mPipelineLayout) ||
+        !CreateMultiDescriptorSet(vkDev) ||
+        !CreatePipelineLayoutWithConstants(vkDev.device, mDescriptorSetLayout, &mPipelineLayout, 0, sizeof(uint32_t)) ||
         !CreateGraphicsPipeline(vkDev, mRenderPass, mPipelineLayout,
-                                { "../../data/shaders/imgui.vert", "../../data/shaders/imgui.frag" }, &mGraphicsPipeline, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-                                true, true, true))
-    {
+                                {"../../../data/shaders/imgui.vert", "../../../data/shaders/imgui_multi.frag"},
+                                &mGraphicsPipeline, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                true, true, true)) {
         std::fprintf(stderr, "ImGuiRenderer: pipeline creation failed\n");
         exit(EXIT_FAILURE);
     }
 }
 
 ImGuiRenderer::~ImGuiRenderer() {
+    for (size_t i = 0; i < mSwapchainFramebuffers.size(); i++) {
+        vkDestroyBuffer(mDevice, mStorageBuffer[i], nullptr);
+        vkFreeMemory(mDevice, mStorageBufferMemory[i], nullptr);
+    }
 
+    vkDestroySampler(mDevice, mFontSampler, nullptr);
+    DestroyVulkanImage(mDevice, mFont);
 }
 
 void ImGuiRenderer::FillCommandBuffer(VkCommandBuffer commandBuffer, size_t currentImage) {
@@ -176,11 +185,12 @@ void ImGuiRenderer::FillCommandBuffer(VkCommandBuffer commandBuffer, size_t curr
     int vtxOffset = 0;
     int idxOffset = 0;
 
-    for(int n = 0; n < mDrawData->CmdListsCount; n++) {
-        const ImDrawList* cmdList = mDrawData->CmdLists[n];
-        for(int cmd = 0; cmd < cmdList->CmdBuffer.Size; cmd++) {
-            const ImDrawCmd* pcmd = &cmdList->CmdBuffer[cmd];
-            AddImGuiItem(mFramebufferWidth, mFramebufferHeight, commandBuffer, pcmd, clipOff, clipScale, idxOffset, vtxOffset, mExtTextures, mPipelineLayout);
+    for (int n = 0; n < mDrawData->CmdListsCount; n++) {
+        const ImDrawList *cmdList = mDrawData->CmdLists[n];
+        for (int cmd = 0; cmd < cmdList->CmdBuffer.Size; cmd++) {
+            const ImDrawCmd *pcmd = &cmdList->CmdBuffer[cmd];
+            AddImGuiItem(mFramebufferWidth, mFramebufferHeight, commandBuffer, pcmd, clipOff, clipScale, idxOffset,
+                         vtxOffset, mExtTextures, mPipelineLayout);
         }
         idxOffset += cmdList->IdxBuffer.Size;
         vtxOffset += cmdList->VtxBuffer.Size;
@@ -200,23 +210,23 @@ void ImGuiRenderer::UpdateBuffers(VulkanRenderDevice &vkDev, uint32_t currentIma
 
     UploadBufferData(vkDev, mUniformBuffersMemory[currentImage], 0, glm::value_ptr(inMtx), sizeof(glm::mat4));
 
-    void* data = nullptr;
+    void *data = nullptr;
     vkMapMemory(vkDev.device, mStorageBufferMemory[currentImage], 0, mBufferSize, 0, &data);
 
-    auto* vtx = reinterpret_cast<ImDrawVert*>(data);
-    for(int n = 0; n < mDrawData->CmdListsCount; n++) {
-        const ImDrawList* cmdList = mDrawData->CmdLists[n];
+    auto *vtx = reinterpret_cast<ImDrawVert *>(data);
+    for (int n = 0; n < mDrawData->CmdListsCount; n++) {
+        const ImDrawList *cmdList = mDrawData->CmdLists[n];
         memcpy(vtx, cmdList->VtxBuffer.Data, cmdList->VtxBuffer.Size * sizeof(ImDrawVert));
         vtx += cmdList->VtxBuffer.Size;
     }
 
-    auto* idx = (uint32_t*)((uint8_t*)data + ImGuiVtxBufferSize);
-    for(int n = 0; n < mDrawData->CmdListsCount; n++) {
-        const ImDrawList* cmdList = mDrawData->CmdLists[n];
-        const auto* src = (const uint16_t*)cmdList->IdxBuffer.Data;
+    auto *idx = (uint32_t *) ((uint8_t *) data + ImGuiVtxBufferSize);
+    for (int n = 0; n < mDrawData->CmdListsCount; n++) {
+        const ImDrawList *cmdList = mDrawData->CmdLists[n];
+        const auto *src = (const uint16_t *) cmdList->IdxBuffer.Data;
 
-        for(int j = 0; j < cmdList->IdxBuffer.Size; j++)
-            *idx++ = (uint32_t)*src++;
+        for (int j = 0; j < cmdList->IdxBuffer.Size; j++)
+            *idx++ = (uint32_t) *src++;
     }
 
     vkUnmapMemory(vkDev.device, mStorageBufferMemory[currentImage]);
@@ -316,9 +326,9 @@ bool ImGuiRenderer::CreateMultiDescriptorSet(VulkanRenderDevice &vkDev) {
 
     for (auto &mExtTexture: mExtTextures) {
         textureDescriptors.push_back({
-                                         .sampler = mExtTexture.sampler,
-                                         .imageView = mExtTexture.image.imageView,
-                                         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL   /// TODO: select type from VulkanTexture object (GENERAL or SHADER_READ_ONLY_OPTIMAL)
+                                             .sampler = mExtTexture.sampler,
+                                             .imageView = mExtTexture.image.imageView,
+                                             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL   /// TODO: select type from VulkanTexture object (GENERAL or SHADER_READ_ONLY_OPTIMAL)
                                      });
     }
 

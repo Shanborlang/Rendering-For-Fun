@@ -248,7 +248,7 @@ bool CreateDepthSampler(VkDevice device, VkSampler* sampler);
 bool CreateUniformBuffer(VulkanRenderDevice& vkDev, VkBuffer& buffer, VkDeviceMemory& bufferMemory, VkDeviceSize bufferSize);
 
 /** Copy [data] to GPU device buffer */
-void UploadBufferData(VulkanRenderDevice& vkDev, const VkDeviceMemory& bufferMemory, VkDeviceSize deviceOffset, const void* data, const size_t dataSize);
+void UploadBufferData(VulkanRenderDevice& vkDev, const VkDeviceMemory& bufferMemory, VkDeviceSize deviceOffset, const void* data, size_t dataSize);
 
 /** Copy GPU device buffer data to [outData] */
 void DownloadBufferData(VulkanRenderDevice& vkDev, const VkDeviceMemory& bufferMemory, VkDeviceSize deviceOffset, void* outData, size_t dataSize);
