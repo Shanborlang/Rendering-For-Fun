@@ -101,7 +101,7 @@ void initMesh() {
   {
 	void *data;
 	vkMapMemory(vkDev.device, stagingBufferMemory, 0, bufferSize, 0, &data);
-	// pregenerated index data
+	// pre-generated index data
 	memcpy((void *)((uint8_t *)data + vertexBufferSize), indicesGen.data(), indexBufferSize);
 	vkUnmapMemory(vkDev.device, stagingBufferMemory);
   }
