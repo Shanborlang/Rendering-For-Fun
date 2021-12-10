@@ -4,6 +4,7 @@
 
 #include "shared/glFramework/GLFWApp.h"
 #include "shared/glFramework/GLShader.h"
+#include "shared/glFramework/GLTexture.h"
 #include "shared/UtilsMath.h"
 #include "shared/Camera.h"
 
@@ -11,6 +12,11 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
+
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <assimp/cimport.h>
+#include <assimp/version.h>
 
 struct PerFrameData {
     mat4 view;
@@ -119,13 +125,40 @@ private:
     GLBuffer bufferIndirect_;
 };
 
+class GLMeshPVP final {
+public:
+    GLMeshPVP(const uint32_t* indices, uint32_t indicesSize, const float* vertexData, uint32_t verticesSize)
+        : mNumIndices(indicesSize / sizeof(uint32_t))
+        , mBufferIndices(indicesSize, indices, 0)
+        , mBufferVertices(verticesSize, vertexData, 0) {
+
+        glCreateVertexArrays(1, &mVao);
+        glVertexArrayElementBuffer(mVao, mBufferIndices.GetHandle());
+    }
+
+    void Draw() const {
+        glBindVertexArray(mVao);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, mBufferVertices.GetHandle());
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mNumIndices), GL_UNSIGNED_INT, nullptr);
+    }
+
+    ~GLMeshPVP() {
+        glDeleteVertexArrays(1, &mVao);
+    }
+
+private:
+    GLuint mVao;
+    uint32_t mNumIndices;
+
+    GLBuffer mBufferIndices;
+    GLBuffer mBufferVertices;
+};
+
 int main() {
     GLApp app;
-    int err{};
     GLShader shdGridVertex("../../../data/shaders/grid.vert");
     GLShader shdGridFragment("../../../data/shaders/grid.frag");
     GLProgram progGrid(shdGridVertex, shdGridFragment);
-    err = check_for_opengl_error(__FILE__, __LINE__);
 
     const GLsizei kUniformBufferSize = sizeof(PerFrameData);
 
@@ -136,26 +169,71 @@ int main() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
-    err = check_for_opengl_error(__FILE__, __LINE__);
 
-    GLShader shaderVertex("../../../data/shaders/mesh_inst.vert");
-    GLShader shaderGeometry("../../../data/shaders/mesh_inst.geom");
-    GLShader shaderFragment("../../../data/shaders/mesh_inst.frag");
-    GLProgram program(shaderVertex, shaderGeometry, shaderFragment);
-    err = check_for_opengl_error(__FILE__, __LINE__);
+    GLShader shaderVertex("../../../data/shaders/PBR.vert");
+    GLShader shaderFragment("../../../data/shaders/PBR.frag");
+    GLProgram program(shaderVertex, shaderFragment);
 
-    MeshData meshData;
-    const MeshFileHeader header = loadMeshData("../../../data/meshes/test.meshes", meshData);
-    err = check_for_opengl_error(__FILE__, __LINE__);
+    const aiScene* scene = aiImportFile("../../../deps/src/glTF-Sample-Models/2.0//DamagedHelmet/glTF/DamagedHelmet.gltf", aiProcess_Triangulate);
+    if(!scene || !scene->HasMeshes()) {
+        printf("Unable to load ../../../deps/src/glTF-Sample-Models/2.0//DamagedHelmet/glTF/DamagedHelmet.gltf\n");
+        exit(255);
+    }
 
-    GLMesh mesh(header, meshData.meshes_.data(), meshData.indexData_.data(), meshData.vertexData_.data());
-    err = check_for_opengl_error(__FILE__, __LINE__);
+    struct VertexData {
+        glm::vec3 pos;
+        glm::vec3 n;
+        glm::vec2 tc;
+    };
+
+    std::vector<VertexData> vertices;
+    std::vector<uint32_t> indices;
+    {
+        const aiMesh* mesh = scene->mMeshes[0];
+        for (unsigned i = 0; i != mesh->mNumVertices; i++)
+        {
+            const aiVector3D v = mesh->mVertices[i];
+            const aiVector3D n = mesh->mNormals[i];
+            const aiVector3D t = mesh->mTextureCoords[0][i];
+            vertices.push_back({ .pos = vec3(v.x, v.y, v.z), .n = vec3(n.x, n.y, n.z), .tc = vec2(t.x, 1.0f - t.y) });
+        }
+        for (unsigned i = 0; i != mesh->mNumFaces; i++)
+        {
+            for (unsigned j = 0; j != 3; j++)
+                indices.push_back(mesh->mFaces[i].mIndices[j]);
+        }
+        aiReleaseImport(scene);
+    }
+
+    const size_t kSizeIndices = sizeof(uint32_t) * indices.size();
+    const size_t kSizeVertices = sizeof(VertexData) * vertices.size();
+
+    GLMeshPVP mesh(indices.data(), (uint32_t)kSizeIndices, (float*)vertices.data(), (uint32_t)kSizeVertices);
+
+    GLTexture texAO(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_AO.jpg");
+    GLTexture texEmissive(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_emissive.jpg");
+    GLTexture texAlbedo(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_albedo.jpg");
+    GLTexture texMeR(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_metalRoughness.jpg");
+    GLTexture texNormal(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_normal.jpg");
+
+    const GLuint textures[] = { texAO.GetHandle(), texEmissive.GetHandle(), texAlbedo.GetHandle(), texMeR.GetHandle(), texNormal.GetHandle() };
+
+    glBindTextures(0, sizeof(textures)/sizeof(textures[0]), textures);
+
+    // cube map
+    GLTexture envMap(GL_TEXTURE_CUBE_MAP, "../../../data/cubemap/spaichingen_hill_2k.hdr");
+    GLTexture envMapIrradiance(GL_TEXTURE_CUBE_MAP, "../../../data/cubemap/spaichingen_hill_2k_irradiance.hdr");
+    const GLuint envMaps[] = { envMap.GetHandle() , envMapIrradiance.GetHandle() };
+    glBindTextures(5, 2, envMaps);
+
+    // BRDF LUT
+    GLTexture brdfLUT(GL_TEXTURE_2D, "../../../data/brdfLUT.ktx");
+    glBindTextureUnit(7, brdfLUT.GetHandle());
 
     // model matrices
     const mat4 m(glm::scale(mat4(1.0f), vec3(2.0f)));
     GLBuffer modelMatrices(sizeof(mat4), value_ptr(m), GL_DYNAMIC_STORAGE_BIT);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, modelMatrices.GetHandle());
-    err = check_for_opengl_error(__FILE__, __LINE__);
 
     glfwSetCursorPosCallback(
             app.GetWindow(),
@@ -167,7 +245,6 @@ int main() {
                 mouseState.pos.y = static_cast<float>(y / height);
             }
     );
-    err = check_for_opengl_error(__FILE__, __LINE__);
 
     glfwSetMouseButtonCallback(
             app.GetWindow(),
@@ -177,7 +254,8 @@ int main() {
                     mouseState.pressedLeft = action == GLFW_PRESS;
             }
     );
-    err = check_for_opengl_error(__FILE__, __LINE__);
+
+    positioner.mMaxSpeed = 5.f;
 
     glfwSetKeyCallback(
             app.GetWindow(),
@@ -200,15 +278,15 @@ int main() {
                     positioner.mMovement.mDown = pressed;
                 if (mods & GLFW_MOD_SHIFT)
                     positioner.mMovement.mFastSpeed = pressed;
+                else
+                    positioner.mMovement.mFastSpeed = false;
                 if (key == GLFW_KEY_SPACE)
                     positioner.SetUpVector(vec3(0.0f, 1.0f, 0.0f));
             }
     );
-    err = check_for_opengl_error(__FILE__, __LINE__);
 
     double timeStamp = glfwGetTime();
     float deltaSeconds = 0.f;
-    err = check_for_opengl_error(__FILE__, __LINE__);
 
     while (!glfwWindowShouldClose(app.GetWindow())) {
         positioner.Update(deltaSeconds, mouseState.pos, mouseState.pressedLeft);
@@ -223,7 +301,6 @@ int main() {
 
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        err = check_for_opengl_error(__FILE__, __LINE__);
 
         const mat4 p = glm::perspective(45.f, ratio, 0.5f, 5000.f);
         const mat4 view = camera.GetViewMatrix();
@@ -234,19 +311,21 @@ int main() {
                 .cameraPos = glm::vec4(camera.GetPosition(), 1.0f)
         };
         glNamedBufferSubData(perFrameDataBuffer.GetHandle(), 0, kUniformBufferSize, &perFrameData);
-        err = check_for_opengl_error(__FILE__, __LINE__);
 
-        glDisable(GL_DEPTH_TEST);
-        glEnable(GL_BLEND);
-        progGrid.UseProgram();
-        glDrawArraysInstancedBaseInstance(GL_TRIANGLES, 0, 6, 1, 0);
-        err = check_for_opengl_error(__FILE__, __LINE__);
+        const mat4 scale = glm::scale(mat4(1.0f), vec3(5.0f));
+        const mat4 rot = glm::rotate(mat4(1.0f), glm::radians(90.0f), vec3(1.0f, 0.0f, 0.0f));
+        const mat4 pos = glm::translate(mat4(1.0f), vec3(0.0f, 0.0f, -1.0f));
+        const mat4 m = glm::rotate(scale * rot * pos, (float)glfwGetTime() * 0.1f, vec3(0.0f, 0.0f, 1.0f));
+        glNamedBufferSubData(modelMatrices.GetHandle(), 0, sizeof(mat4), value_ptr(m));
 
         glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
         program.UseProgram();
-        mesh.Draw(header);
-        err = check_for_opengl_error(__FILE__, __LINE__);
+        mesh.Draw();
+
+        glEnable(GL_BLEND);
+        progGrid.UseProgram();
+        glDrawArraysInstancedBaseInstance(GL_TRIANGLES, 0, 6, 1, 0);
 
         app.SwapBuffers();
     }
