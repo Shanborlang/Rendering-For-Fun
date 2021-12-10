@@ -5,6 +5,7 @@
 #include "shared/glFramework/GLFWApp.h"
 #include "shared/glFramework/GLShader.h"
 #include "shared/glFramework/GLTexture.h"
+#include "shared/glFramework/GLSceneData.h"
 #include "shared/UtilsMath.h"
 #include "shared/Camera.h"
 
@@ -18,6 +19,10 @@
 #include <assimp/cimport.h>
 #include <assimp/version.h>
 
+const GLuint kBufferIndex_PerFrameUniforms = 0;
+const GLuint kBufferIndex_ModelMatrices = 1;
+const GLuint kBufferIndex_Materials = 2;
+
 struct PerFrameData {
     mat4 view;
     mat4 proj;
@@ -29,55 +34,53 @@ struct MouseState {
     bool pressedLeft = false;
 }mouseState;
 
-CameraPositioner_FirstPerson positioner(vec3(-32.5f, 7.5f, -9.5f), vec3(0.f, 0.f, -1.f), vec3(0.f, 1.f, 0.f));
+CameraPositioner_FirstPerson positioner(vec3(-10.f, 3.f, 3.f), vec3(0.f, 0.f, -1.f), vec3(0.f, 1.f, 0.f));
 Camera camera(positioner);
 
 struct DrawElementsIndirectCommand {
-    GLuint count_;
-    GLuint instanceCount_;
-    GLuint firstIndex_;
-    GLuint baseVertex_;
-    GLuint baseInstance_;
+    GLuint count;
+    GLuint instanceCount;
+    GLuint firstIndex;
+    GLuint baseVertex;
+    GLuint baseInstance;
 };
 
 class GLMesh final {
 public:
-    GLMesh(const MeshFileHeader& header, const Mesh* meshes, const uint32_t* indices, const float* vertexData)
-    : numIndices_(header.indexDataSize / sizeof(uint32_t))
-    , bufferIndices_(header.indexDataSize, indices, 0)
-    , bufferVertices_(header.vertexDataSize, vertexData, 0)
-    , bufferIndirect_(sizeof(DrawElementsIndirectCommand)*header.meshCount + sizeof(GLsizei), nullptr, GL_DYNAMIC_STORAGE_BIT) {
+    GLMesh(const GLSceneData& data)
+    : mNumIndices(data.mHeader.indexDataSize / sizeof(uint32_t))
+    , mBufferIndices(data.mHeader.indexDataSize, data.mMeshData.mIndexData.data(), 0)
+    , mBufferVertices(data.mHeader.vertexDataSize, data.mMeshData.mVertexData.data(), 0)
+    , mBufferMaterials(sizeof(MaterialDescription) * data.mMaterials.size(), data.mMaterials.data(), 0)
+    , mBufferIndirect(sizeof(DrawElementsIndirectCommand)* data.mShapes.size() + sizeof(GLsizei), nullptr, GL_DYNAMIC_STORAGE_BIT)
+    , mBufferModelMatrices(sizeof(glm::mat4)* data.mShapes.size(), nullptr, GL_DYNAMIC_STORAGE_BIT)
+    {
 
-        glCreateVertexArrays(1, &vao_);
-        glVertexArrayElementBuffer(vao_, bufferIndices_.GetHandle());
-        glVertexArrayVertexBuffer(vao_, 0, bufferVertices_.GetHandle(), 0, sizeof(vec3) + sizeof(vec3) + sizeof(vec2));
-        check_for_opengl_error(__FILE__, __LINE__);
+        glCreateVertexArrays(1, &mVao);
+        glVertexArrayElementBuffer(mVao, mBufferIndices.GetHandle());
+        glVertexArrayVertexBuffer(mVao, 0, mBufferVertices.GetHandle(), 0, sizeof(vec3) + sizeof(vec3) + sizeof(vec2));
 
         // position
-        glEnableVertexArrayAttrib(vao_, 0);
-        glVertexArrayAttribFormat(vao_, 0, 3, GL_FLOAT, GL_FALSE, 0);
-        glVertexArrayAttribBinding(vao_, 0, 0);
-        check_for_opengl_error(__FILE__, __LINE__);
+        glEnableVertexArrayAttrib(mVao, 0);
+        glVertexArrayAttribFormat(mVao, 0, 3, GL_FLOAT, GL_FALSE, 0);
+        glVertexArrayAttribBinding(mVao, 0, 0);
 
         // uv
-        glEnableVertexArrayAttrib(vao_, 1);
-        glVertexArrayAttribFormat(vao_, 1, 2, GL_FLOAT, GL_FALSE, sizeof(vec3));
-        glVertexArrayAttribBinding(vao_, 1, 0);
-        check_for_opengl_error(__FILE__, __LINE__);
+        glEnableVertexArrayAttrib(mVao, 1);
+        glVertexArrayAttribFormat(mVao, 1, 2, GL_FLOAT, GL_FALSE, sizeof(vec3));
+        glVertexArrayAttribBinding(mVao, 1, 0);
 
         // normal
-        glEnableVertexArrayAttrib(vao_, 2);
-        glVertexArrayAttribFormat(vao_, 2, 3, GL_FLOAT, GL_TRUE, sizeof(vec3) + sizeof(vec2));
-        glVertexArrayAttribBinding(vao_, 2, 0);
-        check_for_opengl_error(__FILE__, __LINE__);
+        glEnableVertexArrayAttrib(mVao, 2);
+        glVertexArrayAttribFormat(mVao, 2, 3, GL_FLOAT, GL_TRUE, sizeof(vec3) + sizeof(vec2));
+        glVertexArrayAttribBinding(mVao, 2, 0);
 
         std::vector<uint8_t> drawCommands;
 
-        const auto numCommands = (GLsizei)header.meshCount;
-
-        drawCommands.resize(sizeof(DrawElementsIndirectCommand) * numCommands + sizeof(GLsizei));
+        drawCommands.resize(sizeof(DrawElementsIndirectCommand) * data.mShapes.size() + sizeof(GLsizei));
 
         // store the number of draw commands in the very beginning of the buffer
+        const auto numCommands = (GLsizei)data.mShapes.size();
         memcpy(drawCommands.data(), &numCommands, sizeof(numCommands));
 
         DrawElementsIndirectCommand* cmd = std::launder(
@@ -85,66 +88,44 @@ public:
                 );
 
         // prepare indirect commands buffer
-        for(uint32_t i = 0; i != numCommands; i++) {
+        for(uint32_t i = 0; i != data.mShapes.size(); i++) {
+            const uint32_t meshIdx = data.mShapes[i].meshIndex;
+            const uint32_t lod = data.mShapes[i].LOD;
             *cmd++ = {
-                    .count_ = meshes[i].GetLODIndicesCount(0),
-                    .instanceCount_ = 1,
-                    .firstIndex_ = meshes[i].indexOffset,
-                    .baseVertex_ = meshes[i].vertexOffset,
-                    .baseInstance_ = 0
+                    .count = data.mMeshData.mMeshes[meshIdx].GetLODIndicesCount(lod),
+                    .instanceCount = 1,
+                    .firstIndex = data.mShapes[i].indexOffset,
+                    .baseVertex = data.mShapes[i].vertexOffset,
+                    .baseInstance = data.mShapes[i].materialIndex
             };
         }
 
-        glNamedBufferSubData(bufferIndirect_.GetHandle(), 0, drawCommands.size(), drawCommands.data());
-        check_for_opengl_error(__FILE__, __LINE__);
+        glNamedBufferSubData(mBufferIndirect.GetHandle(), 0, drawCommands.size(), drawCommands.data());
 
-        glBindVertexArray(vao_);
-        check_for_opengl_error(__FILE__, __LINE__);
+        std::vector<glm::mat4> matrices(data.mShapes.size());
+        size_t i = 0;
+        for(const auto& c: data.mShapes) {
+            matrices[i++] = data.mScene.mGlobalTransform[c.transformIndex];
+        }
+
+        glNamedBufferSubData(mBufferModelMatrices.GetHandle(), 0, matrices.size() * sizeof(glm::mat4), matrices.data());
     }
 
-    void Draw(const MeshFileHeader& header) const {
-        glBindVertexArray(vao_);
-        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bufferIndirect_.GetHandle());
-        glBindBuffer(GL_PARAMETER_BUFFER, bufferIndirect_.GetHandle());
-        glMultiDrawElementsIndirectCount(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)sizeof(GLsizei), 0, (GLsizei)header.meshCount, 0);
+    void Draw(const GLSceneData& data) const {
+        glBindVertexArray(mVao);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, kBufferIndex_Materials, mBufferMaterials.GetHandle());
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, kBufferIndex_ModelMatrices, mBufferModelMatrices.GetHandle());
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, mBufferIndirect.GetHandle());
+        glBindBuffer(GL_PARAMETER_BUFFER, mBufferIndirect.GetHandle());
+        glMultiDrawElementsIndirectCount(GL_TRIANGLES, GL_UNSIGNED_INT, (const void*)sizeof(GLsizei), 0, (GLsizei)data.mShapes.size(), 0);
     }
 
     ~GLMesh() {
-        glDeleteVertexArrays(1, &vao_);
+        glDeleteVertexArrays(1, &mVao);
     }
 
     GLMesh(const GLMesh&) = delete;
     GLMesh(GLMesh&&) = delete;
-
-private:
-    GLuint vao_;
-    uint32_t numIndices_;
-
-    GLBuffer bufferIndices_;
-    GLBuffer bufferVertices_;
-    GLBuffer bufferIndirect_;
-};
-
-class GLMeshPVP final {
-public:
-    GLMeshPVP(const uint32_t* indices, uint32_t indicesSize, const float* vertexData, uint32_t verticesSize)
-        : mNumIndices(indicesSize / sizeof(uint32_t))
-        , mBufferIndices(indicesSize, indices, 0)
-        , mBufferVertices(verticesSize, vertexData, 0) {
-
-        glCreateVertexArrays(1, &mVao);
-        glVertexArrayElementBuffer(mVao, mBufferIndices.GetHandle());
-    }
-
-    void Draw() const {
-        glBindVertexArray(mVao);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, mBufferVertices.GetHandle());
-        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mNumIndices), GL_UNSIGNED_INT, nullptr);
-    }
-
-    ~GLMeshPVP() {
-        glDeleteVertexArrays(1, &mVao);
-    }
 
 private:
     GLuint mVao;
@@ -152,7 +133,11 @@ private:
 
     GLBuffer mBufferIndices;
     GLBuffer mBufferVertices;
+    GLBuffer mBufferMaterials;
+    GLBuffer mBufferIndirect;
+    GLBuffer mBufferModelMatrices;
 };
+
 
 int main() {
     GLApp app;
@@ -166,74 +151,18 @@ int main() {
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, perFrameDataBuffer.GetHandle(), 0, kUniformBufferSize);
 
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-    glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
 
-    GLShader shaderVertex("../../../data/shaders/PBR.vert");
-    GLShader shaderFragment("../../../data/shaders/PBR.frag");
+    GLShader shaderVertex("../../../data/shaders/mesh.vert");
+    GLShader shaderFragment("../../../data/shaders/mesh.frag");
     GLProgram program(shaderVertex, shaderFragment);
 
-    const aiScene* scene = aiImportFile("../../../deps/src/glTF-Sample-Models/2.0//DamagedHelmet/glTF/DamagedHelmet.gltf", aiProcess_Triangulate);
-    if(!scene || !scene->HasMeshes()) {
-        printf("Unable to load ../../../deps/src/glTF-Sample-Models/2.0//DamagedHelmet/glTF/DamagedHelmet.gltf\n");
-        exit(255);
-    }
+    GLSceneData sceneData1("../../../data/meshes/test.meshes", "../../../data/meshes/test.scene", "../../../data/meshes/test.materials");
+    GLSceneData sceneData2("../../../data/meshes/test2.meshes", "../../../data/meshes/test2.scene", "../../../data/meshes/test2.materials");
 
-    struct VertexData {
-        glm::vec3 pos;
-        glm::vec3 n;
-        glm::vec2 tc;
-    };
-
-    std::vector<VertexData> vertices;
-    std::vector<uint32_t> indices;
-    {
-        const aiMesh* mesh = scene->mMeshes[0];
-        for (unsigned i = 0; i != mesh->mNumVertices; i++)
-        {
-            const aiVector3D v = mesh->mVertices[i];
-            const aiVector3D n = mesh->mNormals[i];
-            const aiVector3D t = mesh->mTextureCoords[0][i];
-            vertices.push_back({ .pos = vec3(v.x, v.y, v.z), .n = vec3(n.x, n.y, n.z), .tc = vec2(t.x, 1.0f - t.y) });
-        }
-        for (unsigned i = 0; i != mesh->mNumFaces; i++)
-        {
-            for (unsigned j = 0; j != 3; j++)
-                indices.push_back(mesh->mFaces[i].mIndices[j]);
-        }
-        aiReleaseImport(scene);
-    }
-
-    const size_t kSizeIndices = sizeof(uint32_t) * indices.size();
-    const size_t kSizeVertices = sizeof(VertexData) * vertices.size();
-
-    GLMeshPVP mesh(indices.data(), (uint32_t)kSizeIndices, (float*)vertices.data(), (uint32_t)kSizeVertices);
-
-    GLTexture texAO(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_AO.jpg");
-    GLTexture texEmissive(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_emissive.jpg");
-    GLTexture texAlbedo(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_albedo.jpg");
-    GLTexture texMeR(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_metalRoughness.jpg");
-    GLTexture texNormal(GL_TEXTURE_2D, "../../../deps/src/glTF-Sample-Models/2.0/DamagedHelmet/glTF/Default_normal.jpg");
-
-    const GLuint textures[] = { texAO.GetHandle(), texEmissive.GetHandle(), texAlbedo.GetHandle(), texMeR.GetHandle(), texNormal.GetHandle() };
-
-    glBindTextures(0, sizeof(textures)/sizeof(textures[0]), textures);
-
-    // cube map
-    GLTexture envMap(GL_TEXTURE_CUBE_MAP, "../../../data/cubemap/spaichingen_hill_2k.hdr");
-    GLTexture envMapIrradiance(GL_TEXTURE_CUBE_MAP, "../../../data/cubemap/spaichingen_hill_2k_irradiance.hdr");
-    const GLuint envMaps[] = { envMap.GetHandle() , envMapIrradiance.GetHandle() };
-    glBindTextures(5, 2, envMaps);
-
-    // BRDF LUT
-    GLTexture brdfLUT(GL_TEXTURE_2D, "../../../data/brdfLUT.ktx");
-    glBindTextureUnit(7, brdfLUT.GetHandle());
-
-    // model matrices
-    const mat4 m(glm::scale(mat4(1.0f), vec3(2.0f)));
-    GLBuffer modelMatrices(sizeof(mat4), value_ptr(m), GL_DYNAMIC_STORAGE_BIT);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, modelMatrices.GetHandle());
+    GLMesh mesh1(sceneData1);
+    GLMesh mesh2(sceneData2);
 
     glfwSetCursorPosCallback(
             app.GetWindow(),
@@ -302,7 +231,7 @@ int main() {
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        const mat4 p = glm::perspective(45.f, ratio, 0.5f, 5000.f);
+        const mat4 p = glm::perspective(45.f, ratio, 0.1f, 1000.f);
         const mat4 view = camera.GetViewMatrix();
 
         const PerFrameData perFrameData = {
@@ -312,16 +241,10 @@ int main() {
         };
         glNamedBufferSubData(perFrameDataBuffer.GetHandle(), 0, kUniformBufferSize, &perFrameData);
 
-        const mat4 scale = glm::scale(mat4(1.0f), vec3(5.0f));
-        const mat4 rot = glm::rotate(mat4(1.0f), glm::radians(90.0f), vec3(1.0f, 0.0f, 0.0f));
-        const mat4 pos = glm::translate(mat4(1.0f), vec3(0.0f, 0.0f, -1.0f));
-        const mat4 m = glm::rotate(scale * rot * pos, (float)glfwGetTime() * 0.1f, vec3(0.0f, 0.0f, 1.0f));
-        glNamedBufferSubData(modelMatrices.GetHandle(), 0, sizeof(mat4), value_ptr(m));
-
-        glEnable(GL_DEPTH_TEST);
         glDisable(GL_BLEND);
         program.UseProgram();
-        mesh.Draw();
+        mesh1.Draw(sceneData1);
+        mesh2.Draw(sceneData2);
 
         glEnable(GL_BLEND);
         progGrid.UseProgram();

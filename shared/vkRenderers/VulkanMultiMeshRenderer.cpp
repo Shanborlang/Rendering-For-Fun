@@ -59,7 +59,7 @@ MultiMeshRenderer::MultiMeshRenderer(VulkanRenderDevice &vkDev, const char *mesh
     if((mMaxVertexBufferSize & (offsetAlignment - 1)) != 0) {
         int floats = (offsetAlignment - (mMaxVertexBufferSize & (offsetAlignment - 1))) / sizeof(float);
         for(int ii = 0; ii < floats; ii++)
-            mMeshData.vertexData_.push_back(0);
+            mMeshData.mVertexData.push_back(0);
         mMaxVertexBufferSize = (mMaxVertexBufferSize + offsetAlignment) & ~(offsetAlignment - 1);
     }
 
@@ -72,7 +72,7 @@ MultiMeshRenderer::MultiMeshRenderer(VulkanRenderDevice &vkDev, const char *mesh
         exit(EXIT_FAILURE);
     }
 
-    UpdateGeometryBuffers(vkDev, header.vertexDataSize, header.indexDataSize, mMeshData.vertexData_.data(), mMeshData.indexData_.data());
+    UpdateGeometryBuffers(vkDev, header.vertexDataSize, header.indexDataSize, mMeshData.mVertexData.data(), mMeshData.mIndexData.data());
 
     for (size_t i = 0; i < vkDev.swapchainImages.size(); i++)
     {
@@ -131,7 +131,7 @@ void MultiMeshRenderer::UpdateIndirectBuffers(VulkanRenderDevice &vkDev, size_t 
         const uint32_t j = mShapes[i].meshIndex;
         const uint32_t lod = mShapes[i].LOD;
         data[i] = {
-                .vertexCount = mMeshData.meshes_[j].GetLODIndicesCount(lod),
+                .vertexCount = mMeshData.mMeshes[j].GetLODIndicesCount(lod),
                 .instanceCount = visibility ? (visibility[i] ? 1u : 0u) : 1u,
                 .firstVertex = 0,
                 .firstInstance = i

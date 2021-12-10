@@ -23,24 +23,24 @@ MeshFileHeader loadMeshData(const char* meshFile, MeshData& out) {
         exit(EXIT_FAILURE);
     }
 
-    out.meshes_.resize(header.meshCount);
-    if (fread(out.meshes_.data(), sizeof(Mesh), header.meshCount, f) != header.meshCount)
+    out.mMeshes.resize(header.meshCount);
+    if (fread(out.mMeshes.data(), sizeof(Mesh), header.meshCount, f) != header.meshCount)
     {
         printf("Could not read mesh descriptors\n");
         exit(EXIT_FAILURE);
     }
-    out.boxes_.resize(header.meshCount);
-    if (fread(out.boxes_.data(), sizeof(BoundingBox), header.meshCount, f) != header.meshCount)
+    out.mBoxes.resize(header.meshCount);
+    if (fread(out.mBoxes.data(), sizeof(BoundingBox), header.meshCount, f) != header.meshCount)
     {
         printf("Could not read bounding boxes\n");
         exit(255);
     }
 
-    out.indexData_.resize(header.indexDataSize / sizeof(uint32_t));
-    out.vertexData_.resize(header.vertexDataSize / sizeof(float));
+    out.mIndexData.resize(header.indexDataSize / sizeof(uint32_t));
+    out.mVertexData.resize(header.vertexDataSize / sizeof(float));
 
-    if ((fread(out.indexData_.data(), 1, header.indexDataSize, f) != header.indexDataSize) ||
-        (fread(out.vertexData_.data(), 1, header.vertexDataSize, f) != header.vertexDataSize))
+    if ((fread(out.mIndexData.data(), 1, header.indexDataSize, f) != header.indexDataSize) ||
+        (fread(out.mVertexData.data(), 1, header.vertexDataSize, f) != header.vertexDataSize))
     {
         printf("Unable to read index/vertex data\n");
         exit(255);
@@ -56,17 +56,17 @@ void saveMeshData(const char* fileName, const MeshData& m) {
 
     const MeshFileHeader header = {
             .magicValue = 0x12345678,
-            .meshCount = (uint32_t)m.meshes_.size(),
-            .dataBlockStartOffset = (uint32_t )(sizeof(MeshFileHeader) + m.meshes_.size() * sizeof(Mesh)),
-            .indexDataSize = (uint32_t)(m.indexData_.size() * sizeof(uint32_t)),
-            .vertexDataSize = (uint32_t)(m.vertexData_.size() * sizeof(float))
+            .meshCount = (uint32_t)m.mMeshes.size(),
+            .dataBlockStartOffset = (uint32_t )(sizeof(MeshFileHeader) + m.mMeshes.size() * sizeof(Mesh)),
+            .indexDataSize = (uint32_t)(m.mIndexData.size() * sizeof(uint32_t)),
+            .vertexDataSize = (uint32_t)(m.mVertexData.size() * sizeof(float))
     };
 
     fwrite(&header, 1, sizeof(header), f);
-    fwrite(m.meshes_.data(), sizeof(Mesh), header.meshCount, f);
-    fwrite(m.boxes_.data(), sizeof(BoundingBox), header.meshCount, f);
-    fwrite(m.indexData_.data(), 1, header.indexDataSize, f);
-    fwrite(m.vertexData_.data(), 1, header.vertexDataSize, f);
+    fwrite(m.mMeshes.data(), sizeof(Mesh), header.meshCount, f);
+    fwrite(m.mBoxes.data(), sizeof(BoundingBox), header.meshCount, f);
+    fwrite(m.mIndexData.data(), 1, header.indexDataSize, f);
+    fwrite(m.mVertexData.data(), 1, header.vertexDataSize, f);
 
     fclose(f);
 }
@@ -114,26 +114,26 @@ MeshFileHeader mergeMeshData(MeshData& m, const std::vector<MeshData*> md) {
     uint32_t offs = 0;
     for (const MeshData* i: md)
     {
-        mergeVectors(m.indexData_, i->indexData_);
-        mergeVectors(m.vertexData_, i->vertexData_);
-        mergeVectors(m.meshes_, i->meshes_);
-        mergeVectors(m.boxes_, i->boxes_);
+        mergeVectors(m.mIndexData, i->mIndexData);
+        mergeVectors(m.mVertexData, i->mVertexData);
+        mergeVectors(m.mMeshes, i->mMeshes);
+        mergeVectors(m.mBoxes, i->mBoxes);
 
         uint32_t vtxOffset = totalVertexDataSize / 8;  /* 8 is the number of per-vertex attributes: position, normal + UV */
 
-        for (size_t j = 0 ; j < (uint32_t)i->meshes_.size() ; j++)
+        for (size_t j = 0 ; j < (uint32_t)i->mMeshes.size() ; j++)
             // m.vertexCount, m.lodCount and m.streamCount do not change
             // m.vertexOffset also does not change, because vertex offsets are local (i.e., baked into the indices)
-            m.meshes_[offs + j].indexOffset += totalIndexDataSize;
+            m.mMeshes[offs + j].indexOffset += totalIndexDataSize;
 
         // shift individual indices
-        for(size_t j = 0 ; j < i->indexData_.size() ; j++)
-            m.indexData_[totalIndexDataSize + j] += vtxOffset;
+        for(size_t j = 0 ; j < i->mIndexData.size() ; j++)
+            m.mIndexData[totalIndexDataSize + j] += vtxOffset;
 
-        offs += (uint32_t)i->meshes_.size();
+        offs += (uint32_t)i->mMeshes.size();
 
-        totalIndexDataSize += (uint32_t)i->indexData_.size();
-        totalVertexDataSize += (uint32_t)i->vertexData_.size();
+        totalIndexDataSize += (uint32_t)i->mIndexData.size();
+        totalVertexDataSize += (uint32_t)i->mVertexData.size();
     }
 
     return MeshFileHeader {
@@ -147,9 +147,9 @@ MeshFileHeader mergeMeshData(MeshData& m, const std::vector<MeshData*> md) {
 
 
 void recalculateBoundingBoxes(MeshData& m) {
-    m.boxes_.clear();
+    m.mBoxes.clear();
 
-    for (const auto& mesh : m.meshes_)
+    for (const auto& mesh : m.mMeshes)
     {
         const auto numIndices = mesh.GetLODIndicesCount(0);
 
@@ -158,12 +158,12 @@ void recalculateBoundingBoxes(MeshData& m) {
 
         for (auto i = 0; i != numIndices; i++)
         {
-            auto vtxOffset = m.indexData_[mesh.indexOffset + i] + mesh.vertexOffset;
-            const float* vf = &m.vertexData_[vtxOffset * kMaxStreams];
+            auto vtxOffset = m.mIndexData[mesh.indexOffset + i] + mesh.vertexOffset;
+            const float* vf = &m.mVertexData[vtxOffset * kMaxStreams];
             vmin = glm::min(vmin, vec3(vf[0], vf[1], vf[2]));
             vmax = glm::max(vmax, vec3(vf[0], vf[1], vf[2]));
         }
 
-        m.boxes_.emplace_back(vmin, vmax);
+        m.mBoxes.emplace_back(vmin, vmax);
     }
 }
